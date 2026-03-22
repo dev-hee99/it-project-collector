@@ -1,0 +1,34 @@
+# 가상환경
+.venv/
+venv/
+env/
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# 환경변수 / 민감 정보
+.env
+settings_local.py
+
+# 수집 결과물
+*.json
+*.csv
+
+# 로그
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker 데이터
+postgres_data/
+redis_data/
