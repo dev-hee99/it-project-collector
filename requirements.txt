@@ -1,0 +1,35 @@
+# Python 3.12 / 3.13 권장 (3.14는 일부 패키지 호환 불안정)
+
+# HTTP 요청
+requests==2.32.3
+
+# HTML 파싱
+beautifulsoup4==4.14.3
+lxml==6.0.2
+
+# JS 렌더링
+playwright>=1.50.0
+greenlet>=3.2.2
+
+# 데이터 처리
+pandas>=1.4.0,<3
+
+# DB
+sqlalchemy==2.0.36
+psycopg[binary]==3.3.3
+
+# 캐시 / 큐
+redis==5.2.1
+
+# 스케줄러
+apscheduler==3.11.2
+
+# 대시보드
+streamlit>=1.45.0
+
+# API 서버
+fastapi==0.115.5
+uvicorn==0.32.1
+
+# 알림
+python-telegram-bot==21.7

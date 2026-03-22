@@ -1,0 +1,40 @@
+services:
+
+  postgres:
+    image: postgres:17
+    container_name: it_collector_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: collector
+      POSTGRES_PASSWORD: collector1234
+      POSTGRES_DB: freelancer_jobs
+      TZ: Asia/Seoul
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql  # 최초 실행 시 자동 적용
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U collector -d freelancer_jobs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: it_collector_redis
+    restart: unless-stopped
+    command: redis-server --requirepass redis1234 --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis1234", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
