@@ -98,6 +98,7 @@ class SismJob:
     duration: str
     budget: str
     level: str
+    project_type: str   # SI / SM 등 프로젝트 유형
     posted_at: str
     start_date: str      # 공고 시작일
     end_date: str        # 공고 마감일 (날짜형)
@@ -144,7 +145,7 @@ SKILL_KEYWORDS = [
     "Terraform", "Ansible",
     "JSP", "Mybatis", "JPA", "Hibernate", "MSA", "REST", "GraphQL",
     "Git", "SVN", "Linux",
-    "SAP", "ABAP", "ERP", "SI", "SM",
+    "SAP", "ABAP", "ERP",
 ]
 
 SKILL_RE    = re.compile(r"\b(" + "|".join(SKILL_KEYWORDS) + r")\b", re.IGNORECASE)
@@ -154,6 +155,26 @@ BUDGET_RE   = re.compile(r"\d[\d,]*\s*(?:만원|원/월|원|만|MM)?", re.IGNORE
 LOCATION_RE = re.compile(
     r"(서울|경기|인천|부산|대전|대구|광주|울산|세종|제주|강원|충북|충남|전북|전남|경북|경남)\s*\S*"
 )
+
+
+# 프로젝트 유형 키워드 (스킬이 아닌 별도 필드로 분리)
+PROJECT_TYPE_KEYWORDS = {
+    "SI": "SI (시스템 구축)",
+    "SM": "SM (시스템 유지보수)",
+}
+PROJECT_TYPE_RE = re.compile(
+    r"(SI|SM)",
+    re.IGNORECASE,
+)
+
+
+def extract_project_type(text: str) -> str:
+    """본문에서 프로젝트 유형(SI/SM) 추출"""
+    m = PROJECT_TYPE_RE.search(text or "")
+    if m:
+        key = m.group(1).upper()
+        return PROJECT_TYPE_KEYWORDS.get(key, key)
+    return ""
 
 
 def extract_skills(text: str) -> list[str]:
@@ -281,6 +302,9 @@ def parse_detail_html(html: str, url: str, meta: dict) -> SismJob:
     if nick_el:
         company = nick_el.get_text(strip=True)
 
+    # 프로젝트 유형 (SI/SM)
+    project_type = extract_project_type(full_text)
+
     # 공고 시작일 / 마감일 / 프로젝트 기간
     start_date, end_date = parse_date_range(full_text)
     if not deadline and end_date:
@@ -298,6 +322,7 @@ def parse_detail_html(html: str, url: str, meta: dict) -> SismJob:
         duration=duration,
         budget=budget,
         level=level,
+        project_type=project_type,
         posted_at=meta.get("posted_at", ""),
         start_date=start_date,
         end_date=end_date,
@@ -388,6 +413,12 @@ def crawl_sism(
                     continue
 
                 job = parse_detail_html(detail_html, job_url, meta)
+
+                # 오늘 날짜 기준 마감 공고 제외
+                if not is_active(job.deadline or job.end_date, ""):
+                    logger.debug(f"마감 건너뜀: {job.title[:40]}")
+                    continue
+
                 yield job
                 time.sleep(delay)
 
@@ -415,6 +446,7 @@ if __name__ == "__main__":
         print(f"기간    : {job.duration}")
         print(f"단가    : {job.budget}")
         print(f"난이도  : {job.level}")
+        print(f"유형    : {job.project_type}")
         print(f"근무지  : {job.location}")
         print(f"등록일  : {job.posted_at}")
         print(f"시작일  : {job.start_date}")
