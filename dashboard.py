@@ -269,6 +269,7 @@ if "collect_proc"    not in st.session_state: st.session_state["collect_proc"]  
 if "collect_logs"    not in st.session_state: st.session_state["collect_logs"]    = []
 if "collect_running" not in st.session_state: st.session_state["collect_running"] = False
 if "collect_source"  not in st.session_state: st.session_state["collect_source"]  = "전체"
+if "sort_option"     not in st.session_state: st.session_state["sort_option"]     = "posted_at_desc"
 
 # DB 연결 로그 표시
 with st.expander("🔌 DB 연결 로그", expanded=is_demo):
@@ -311,6 +312,21 @@ with st.sidebar:
     selected_skills = st.multiselect("기술 스택", options=skill_options, key="skills_select")
     st.session_state["selected_skills_val"] = selected_skills
     st.session_state["skill_filter"] = selected_skills[0] if selected_skills else None
+
+    st.divider()
+    st.markdown("## 📑 정렬")
+    sort_option = st.selectbox(
+        "정렬 기준",
+        options=["posted_at_desc", "posted_at_asc", "deadline_asc", "collected_at_desc"],
+        format_func=lambda x: {
+            "posted_at_desc":    "등록일 최신순",
+            "posted_at_asc":     "등록일 오래된순",
+            "deadline_asc":      "마감 임박순",
+            "collected_at_desc": "수집일 최신순",
+        }[x],
+        key="sort_select",
+    )
+    st.session_state["sort_option"] = sort_option
 
     st.divider()
 
@@ -565,6 +581,35 @@ def live_panel():
         jobs = [j for j in jobs
                 if all(s in (j.get("skills") or []) for s in selected_skills_val)]
 
+    # ── 정렬 ──────────────────────────────────
+    sort_opt = st.session_state.get("sort_option", "posted_at_desc")
+
+    def sort_key_posted(j, reverse=True):
+        """posted_at 기준 정렬 키 — 빈 값은 맨 뒤로"""
+        val = j.get("posted_at") or j.get("collected_at") or ""
+        return val if val else ("9" if not reverse else "")
+
+    def sort_key_deadline(j):
+        """마감 임박순 — D-N 숫자 작을수록 앞, 날짜형도 처리"""
+        deadline = j.get("deadline", "") or j.get("end_date", "")
+        import re as _re
+        d_m = _re.search(r"D-(\d+)", deadline)
+        if d_m:
+            return int(d_m.group(1))
+        date_m = _re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", deadline)
+        if date_m:
+            return int(date_m.group(1)) * 10000 + int(date_m.group(2)) * 100 + int(date_m.group(3))
+        return 99999  # 마감일 없으면 맨 뒤
+
+    if sort_opt == "posted_at_desc":
+        jobs = sorted(jobs, key=lambda j: j.get("posted_at") or j.get("collected_at") or "", reverse=True)
+    elif sort_opt == "posted_at_asc":
+        jobs = sorted(jobs, key=lambda j: j.get("posted_at") or j.get("collected_at") or "")
+    elif sort_opt == "deadline_asc":
+        jobs = sorted(jobs, key=sort_key_deadline)
+    elif sort_opt == "collected_at_desc":
+        jobs = sorted(jobs, key=lambda j: str(j.get("collected_at") or ""), reverse=True)
+
     by_source = {r["source"]: r for r in stats.get("by_source", [])}
     total_active = sum(r.get("active", 0) for r in by_source.values())
 
@@ -602,7 +647,13 @@ def live_panel():
             st.caption("스킬 데이터 없음")
 
     # ── 공고 목록 ─────────────────────────────
-    st.markdown(f"### 📋 공고 목록 ({len(jobs)}건)")
+    sort_label = {
+        "posted_at_desc":    "등록일 최신순",
+        "posted_at_asc":     "등록일 오래된순",
+        "deadline_asc":      "마감 임박순",
+        "collected_at_desc": "수집일 최신순",
+    }.get(sort_opt, "")
+    st.markdown(f"### 📋 공고 목록 ({len(jobs)}건) <span style='font-size:13px;color:#888;font-weight:400'>· {sort_label}</span>", unsafe_allow_html=True)
     if not jobs:
         st.info("조건에 맞는 공고가 없어요.")
     else:
@@ -705,3 +756,91 @@ def live_panel():
 
 # fragment 실행 (자동 갱신 주기 적용)
 live_panel()
+
+
+# ──────────────────────────────────────────────
+# 실시간 신규 수집 피드 (3초마다 갱신)
+# ──────────────────────────────────────────────
+
+@st.fragment(run_every=3)
+def realtime_feed():
+    running  = st.session_state.get("collect_running", False)
+    show     = st.session_state.get("show_feed", True)
+
+    if not running and not show:
+        return
+    if is_demo:
+        return
+
+    try:
+        from db import get_session
+        from sqlalchemy import text as _text
+
+        with get_session() as session:
+            rows = session.execute(_text("""
+                SELECT source, title, skills, budget, deadline,
+                       work_type, location, url, collected_at
+                FROM jobs
+                WHERE collected_at >= NOW() - INTERVAL '3 minutes'
+                ORDER BY collected_at DESC
+                LIMIT 20
+            """)).mappings().all()
+            new_jobs = [dict(r) for r in rows]
+    except Exception:
+        return
+
+    if not new_jobs:
+        if running:
+            st.info("⏳ 수집 중... 신규 데이터를 기다리고 있어요.")
+        return
+
+    with st.expander(
+        f"🟢 실시간 수집 피드 — 최근 3분 내 {len(new_jobs)}건",
+        expanded=running,
+    ):
+        st.caption(f"마지막 확인: {datetime.now():%H:%M:%S}")
+
+        for job in new_jobs:
+            source       = job.get("source", "")
+            title        = job.get("title", "")
+            url          = job.get("url", "#")
+            skills       = job.get("skills") or []
+            budget       = job.get("budget", "")
+            deadline     = job.get("deadline", "")
+            location     = job.get("location", "")
+            collected_at = job.get("collected_at", "")
+
+            if hasattr(collected_at, "strftime"):
+                collected_str = collected_at.strftime("%H:%M:%S")
+            else:
+                collected_str = str(collected_at)[11:19] if collected_at else ""
+
+            if isinstance(skills, str):
+                skills = [s.strip() for s in skills.split(",") if s.strip()]
+
+            skill_tags = "".join(
+                f'<span class="skill-tag">{s}</span>'
+                for s in skills[:5]
+            )
+            meta_parts = [x for x in [location, budget, deadline] if x]
+            meta_str   = " · ".join(meta_parts)
+
+            card_html = (
+                '<div class="job-card" style="border-left:3px solid #1D9E75">'
+                '<div style="display:flex;justify-content:space-between;align-items:flex-start">'
+                '<div>'
+                + source_badge(source)
+                + f'<div class="job-title" style="margin-top:4px">'
+                f'<a href="{url}" target="_blank" style="text-decoration:none;color:inherit">'
+                f'{title}</a></div>'
+                f'<div class="job-meta">{meta_str}</div>'
+                f'<div style="margin-top:4px">{skill_tags}</div>'
+                '</div>'
+                '<div style="text-align:right;white-space:nowrap;margin-left:12px">'
+                '<div style="font-size:11px;color:#1D9E75;font-weight:500">NEW</div>'
+                f'<div class="job-meta">{collected_str}</div>'
+                '</div></div></div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
+
+realtime_feed()
