@@ -200,14 +200,73 @@ def list_url(page: int = 1) -> str:
 # 목록 파서
 # ──────────────────────────────────────────────
 
+def _is_closed_badge(row) -> bool:
+    """
+    SISM 목록 li/div에서 마감 배지 존재 여부 확인.
+
+    실제 HTML 구조:
+      <span class="badge outline medium legend" style="color:#f91a19;...">마감</span>
+
+    마감 배지가 있으면 True 반환 → 상세 페이지 요청 생략.
+    """
+    # 1순위: legend 클래스 배지에서 "마감" 텍스트 확인 (가장 정확)
+    for span in row.select("span.legend"):
+        if "마감" in span.get_text(strip=True):
+            return True
+
+    # 2순위: list-comment 영역 안의 마감 텍스트
+    comment = row.select_one(".list-comment")
+    if comment and "마감" in comment.get_text(strip=True):
+        return True
+
+    # 3순위: h3 태그 색상이 #aaa (마감 공고는 회색 처리)
+    h3 = row.select_one("h3")
+    if h3:
+        style = h3.get("style", "")
+        if "color:#aaa" in style.replace(" ", "") or "color: #aaa" in style:
+            return True
+
+    return False
+
+
+def _parse_deadline_from_row(row) -> str:
+    """
+    SISM 목록 행에서 마감일/기간 추출.
+
+    실제 HTML 구조:
+      <div class="list-local">
+        <span>서울 종로구</span>
+        <span>2026-03-23</span>   ← 등록일 또는 마감일
+        <span>5개월</span>        ← 프로젝트 기간
+      </div>
+    """
+    local = row.select_one(".list-local")
+    if not local:
+        return ""
+
+    spans = [s.get_text(strip=True) for s in local.find_all("span")]
+    for span in spans:
+        # 날짜 형식 (YYYY-MM-DD)
+        m = re.search(r"\d{4}[-./]\d{1,2}[-./]\d{1,2}", span)
+        if m:
+            return m.group(0)
+
+    return ""
+
+
 def parse_list_html(html: str) -> list[dict]:
     """
     Playwright가 렌더링한 HTML에서 목록 추출.
-    wr_id 포함 링크를 기준으로 파싱 — 테이블/div 구조에 무관.
+
+    마감 공고 사전 필터링 (상세 요청 생략):
+      1. <span class="badge ... legend">마감</span> 배지 존재
+      2. <h3 style="color:#aaa"> — 회색 제목 (마감 공고 스타일)
+      3. .list-comment 영역 내 "마감" 텍스트
     """
-    soup = BeautifulSoup(html, "lxml")
-    items = []
+    soup     = BeautifulSoup(html, "lxml")
+    items    = []
     seen_urls: set[str] = set()
+    skipped  = 0
 
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -223,30 +282,86 @@ def parse_list_html(html: str) -> list[dict]:
         if not title:
             continue
 
-        # 부모 행에서 메타 정보 추출
-        row = a.find_parent(["tr", "li", "div"])
-        company   = ""
+        # 부모 컨테이너 (.list-type3 또는 li/div)
+        row = a.find_parent(["li", "div"])
+        # 더 큰 컨테이너로 이동 (마감 배지가 다른 위치에 있을 수 있음)
+        list_wrap = row
+        for _ in range(4):
+            parent = list_wrap.find_parent(["li", "div"]) if list_wrap else None
+            if parent and "list" in " ".join(parent.get("class", [])):
+                list_wrap = parent
+                break
+
+        container = list_wrap or row
+
+        # ── 마감 배지 체크 (핵심 필터) ────────────
+        if container and _is_closed_badge(container):
+            skipped += 1
+            logger.debug(f"마감 배지 감지, 제외: {title[:40]}")
+            continue
+
+        # 메타 정보 추출
         posted_at = ""
+        deadline  = ""
         views     = 0
+        company   = ""
 
-        if row:
-            text = row.get_text(separator=" ", strip=True)
+        if container:
+            # 마감일 추출 (.list-local 스팬)
+            deadline = _parse_deadline_from_row(container)
 
-            date_m = re.search(r"\d{2,4}[-./]\d{1,2}[-./]\d{1,2}", text)
-            if date_m:
-                posted_at = date_m.group(0)
+            # 날짜형 마감일이 오늘 이전이면 제외
+            if deadline:
+                date_m = re.search(
+                    r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", deadline
+                )
+                if date_m:
+                    from datetime import date as _date
+                    try:
+                        dl = _date(
+                            int(date_m.group(1)),
+                            int(date_m.group(2)),
+                            int(date_m.group(3)),
+                        )
+                        if dl < _date.today():
+                            skipped += 1
+                            logger.debug(f"날짜 마감 제외: {title[:40]} ({deadline})")
+                            continue
+                    except ValueError:
+                        pass
 
+            # 조회수
+            text  = container.get_text(separator=" ", strip=True)
             hit_m = re.search(r"조회\s*[:\s]*(\d+)", text)
             if hit_m:
                 views = int(hit_m.group(1))
+
+            # 등록일
+            local = container.select_one(".list-local")
+            if local:
+                spans = [s.get_text(strip=True) for s in local.find_all("span")]
+                for span in spans:
+                    dm = re.search(r"\d{4}[-./]\d{1,2}[-./]\d{1,2}", span)
+                    if dm:
+                        posted_at = dm.group(0)
+                        break
+
+            # 회사명
+            comp_el = container.select_one(".company img")
+            if comp_el:
+                company = comp_el.get("alt", "")
 
         items.append({
             "title":     title,
             "url":       full_url,
             "company":   company,
             "posted_at": posted_at,
+            "deadline":  deadline,
             "views":     views,
         })
+
+    if skipped:
+        logger.info(f"  목록 마감 제외: {skipped}건 (상세 요청 생략)")
 
     return items
 
@@ -294,8 +409,21 @@ def parse_detail_html(html: str, url: str, meta: dict) -> SismJob:
     budget   = bud_list[0] if bud_list else ""
     loc_m    = LOCATION_RE.search(body)
     location = loc_m.group(0)[:20] if loc_m else ""
-    dead_m   = re.search(r"마감\s*[:\s]*(\d{4}[-./]\d{1,2}[-./]\d{1,2}|\S+)", body)
-    deadline = dead_m.group(1) if dead_m else ""
+    # 목록 단계에서 이미 추출된 deadline 우선 사용
+    deadline = meta.get("deadline", "")
+    if not deadline:
+        # 날짜형/D-N 패턴만 허용 — \S+ 제거로 "된","됩니다" 오캡처 방지
+        dead_m = re.search(
+            r"마감(?:일자?|일정)?\s*[:\s]\s*(\d{4}[-./]\d{1,2}[-./]\d{1,2})"
+            r"|(\d{4}[-./]\d{1,2}[-./]\d{1,2})\s*마감"
+            r"|(D-\d+|D-Day)",
+            body,
+            re.IGNORECASE,
+        )
+        if dead_m:
+            deadline = next(g for g in dead_m.groups() if g)
+        else:
+            deadline = ""
 
     company  = meta.get("company", "")
     nick_el  = soup.select_one(".sv_member, .nick, .writer, .author")

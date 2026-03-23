@@ -82,11 +82,8 @@ def parse_project_duration(text: str) -> str:
     return m.group(0).strip() if m else ""
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger("kmong_parser")
+from logger import get_logger
+logger = get_logger("kmong_parser")
 
 
 # ──────────────────────────────────────────────
@@ -305,112 +302,195 @@ def _safe(obj, *keys, default=""):
     return obj if obj is not None else default
 
 
+def _format_budget(amount) -> str:
+    """
+    크몽 amount 필드 (원 단위 정수) → 읽기 쉬운 문자열.
+    예: 22000000 → "2,200만원"
+         500000  → "50만원"
+    """
+    try:
+        amt = int(amount)
+        if amt >= 10000:
+            man = amt // 10000
+            rem = (amt % 10000) // 1000
+            if rem:
+                return f"{man:,}만 {rem}천원"
+            return f"{man:,}만원"
+        return f"{amt:,}원"
+    except (ValueError, TypeError):
+        return str(amount)
+
+
+def _format_deadline(deadline_val) -> tuple[str, str]:
+    """
+    크몽 deadline 필드 (마감까지 남은 일수 정수) → (deadline_str, end_date_str).
+
+    실제 API 응답: deadline = 8  (오늘로부터 8일 후 마감)
+    반환:
+      deadline_str = "D-8"
+      end_date_str = "2026-04-01"  (오늘 + N일)
+    """
+    from datetime import date, timedelta
+    try:
+        days = int(deadline_val)
+        end  = date.today() + timedelta(days=days)
+        return f"D-{days}", end.strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        # 이미 문자열인 경우 그대로 반환
+        s = str(deadline_val)
+        return s, ""
+
+
 def normalize_item(item: dict) -> KmongJob | None:
     """
-    API 응답 아이템 → KmongJob.
-    실제 필드명은 첫 실행 후 로그로 확인 — 아래는 크몽 API 일반 패턴.
+    크몽 API 응답 아이템 → KmongJob.
+
+    실제 확인된 API 필드 (2026-03 기준):
+      id            : 공고 ID
+      title         : 제목
+      content       : 본문 (목록), description (상세)
+      amount        : 예산 (원 단위 정수)
+      deadline      : 마감까지 남은 일수 (정수)
+      days          : 프로젝트 기간 (일수 정수)
+      status        : APPROVAL / CLOSED 등
+      project_type  : OUTSOURCING / SI 등
+      proposal_count: 제안 수
+      breadcrumb    : 카테고리 경로 (예: "IT·프로그래밍 / 웹사이트 개발")
+      category.cat1_name / cat2_name : 카테고리명
+      answers       : Q&A 리스트
+
+    등록일(createdAt) API 미제공 → 수집 시각(collected_at)으로 대체
     """
-    request_id = str(
-        item.get("id") or item.get("requestId") or item.get("request_id") or ""
-    )
+    request_id = str(item.get("id") or item.get("requestId") or "")
     if not request_id:
         return None
 
-    title = str(
-        item.get("title") or item.get("name") or item.get("subject") or ""
+    title = str(item.get("title") or item.get("name") or "")
+
+    # ── 카테고리 ──────────────────────────────
+    # breadcrumb: "IT·프로그래밍 / 웹사이트 개발"
+    breadcrumb   = str(item.get("breadcrumb") or "")
+    crumb_parts  = [p.strip() for p in breadcrumb.split("/")]
+    category     = crumb_parts[0] if crumb_parts else ""
+    sub_category = crumb_parts[1] if len(crumb_parts) > 1 else ""
+
+    # category 딕셔너리 방식 fallback
+    cat_dict = item.get("category") or {}
+    if isinstance(cat_dict, dict):
+        category     = category     or cat_dict.get("cat1_name") or ""
+        sub_category = sub_category or cat_dict.get("cat2_name") or ""
+
+    # ── 예산: amount (원 단위 정수) ────────────
+    amount = item.get("amount") or item.get("budget") or 0
+    budget = _format_budget(amount) if amount else ""
+
+    # ── 본문 ──────────────────────────────────
+    description = str(
+        item.get("description") or item.get("content") or item.get("body") or ""
     )
 
-    # 카테고리
-    cat_raw  = item.get("category") or item.get("categoryName") or {}
-    category = cat_raw if isinstance(cat_raw, str) else _safe(cat_raw, "name")
-    sub_raw  = item.get("subCategory") or item.get("sub_category") or {}
-    sub      = sub_raw if isinstance(sub_raw, str) else _safe(sub_raw, "name")
-
-    # 예산
-    budget_min = str(item.get("budgetMin") or item.get("budget_min") or item.get("budget") or "")
-    budget_max = str(item.get("budgetMax") or item.get("budget_max") or "")
-    if budget_min and budget_max and budget_min != budget_max:
-        budget = f"{budget_min} ~ {budget_max}"
+    # ── 날짜 처리 ──────────────────────────────
+    # deadline: 마감까지 남은 일수 (정수)
+    # → "D-N" 문자열과 실제 날짜 계산
+    raw_deadline = item.get("deadline")
+    if raw_deadline is not None:
+        deadline, end_date = _format_deadline(raw_deadline)
     else:
-        budget = budget_min or budget_max
+        deadline, end_date = "", ""
 
-    # 날짜
-    posted_at = str(item.get("createdAt") or item.get("created_at") or "")
-    start_date = str(item.get("startDate") or item.get("start_date") or posted_at or "")
-    deadline  = str(item.get("deadline")  or item.get("dueDate") or item.get("due_date") or "")
-    end_date  = deadline  # API에서 날짜형 마감일이 오면 그대로 사용
-    project_duration = str(item.get("duration") or item.get("period") or item.get("projectDuration") or "")
-    if not project_duration and description:
+    # 등록일: API 미제공 → 빈 값 (collected_at으로 대체)
+    posted_at  = ""
+    start_date = ""
+
+    # ── 프로젝트 기간: days (일수 정수) ─────────
+    raw_days = item.get("days")
+    if raw_days:
+        try:
+            d = int(raw_days)
+            # 30일 단위로 개월 환산
+            if d >= 30:
+                months = round(d / 30)
+                project_duration = f"{months}개월" if months < 12 else f"{months // 12}년"
+            else:
+                project_duration = f"{d}일"
+        except (ValueError, TypeError):
+            project_duration = str(raw_days)
+    else:
         project_duration = parse_project_duration(description)
 
-    # 상태
-    status = str(item.get("status") or item.get("state") or "")
+    # ── 상태 ──────────────────────────────────
+    raw_status = str(item.get("status") or "")
+    STATUS_MAP = {
+        "APPROVAL": "모집중",
+        "CLOSED":   "마감",
+        "COMPLETE": "완료",
+        "CANCEL":   "취소",
+    }
+    status = STATUS_MAP.get(raw_status.upper(), raw_status)
 
-    # 스킬
+    # ── 유형 ──────────────────────────────────
+    TYPE_MAP = {
+        "OUTSOURCING": "외주",
+        "SI":          "SI",
+        "SM":          "SM",
+    }
+    raw_type     = str(item.get("project_type") or item.get("projectType") or "")
+    project_type = TYPE_MAP.get(raw_type.upper(), raw_type)
+
+    # ── 스킬: 본문에서 추출 (API 미제공) ────────
     raw_skills = item.get("skills") or item.get("tags") or item.get("techStack") or []
-    skills     = [s if isinstance(s, str) else _safe(s, "name") for s in raw_skills]
-
-    # 본문
-    description = str(item.get("description") or item.get("content") or item.get("body") or "")
-
-    # 통계
-    views     = int(item.get("viewCount") or item.get("views") or 0)
-    proposals = int(item.get("proposalCount") or item.get("proposals") or 0)
-
-    # 유형
-    type_raw     = item.get("projectType") or item.get("project_type") or {}
-    project_type = type_raw if isinstance(type_raw, str) else _safe(type_raw, "name")
-
-    # 스킬 없으면 본문에서 추출
+    skills = [s if isinstance(s, str) else _safe(s, "name") for s in raw_skills]
     if not skills and description:
         skills = extract_skills(description)
 
+    # ── 통계 ──────────────────────────────────
+    proposals = int(item.get("proposal_count") or item.get("proposalCount") or 0)
+    views     = int(item.get("viewCount")       or item.get("views")         or 0)
+
     return KmongJob(
-        request_id   = request_id,
-        url          = build_detail_url(request_id),
-        url_hash     = make_hash(request_id),
-        title        = title,
-        category     = str(category),
-        sub_category = str(sub),
-        project_type = str(project_type),
-        budget       = budget,
-        start_date   = start_date,
-        end_date     = end_date,
-        deadline     = deadline,
+        request_id       = request_id,
+        url              = build_detail_url(request_id),
+        url_hash         = make_hash(request_id),
+        title            = title,
+        category         = category,
+        sub_category     = sub_category,
+        project_type     = project_type,
+        budget           = budget,
+        start_date       = start_date,
+        end_date         = end_date,
+        deadline         = deadline,
         project_duration = project_duration,
-        skills       = skills,
-        description  = description[:2000],
-        posted_at    = posted_at,
-        status       = status,
-        views        = views,
-        proposals    = proposals,
+        skills           = skills,
+        description      = description[:2000],
+        posted_at        = posted_at,
+        status           = status,
+        views            = views,
+        proposals        = proposals,
     )
 
 
 def has_next_page(api_resp: dict, current_page: int) -> bool:
     """
-    API 응답에서 다음 페이지 여부 판단.
-    Spring Pageable: last=True/False 또는 totalPages 방식.
+    크몽 API 페이지네이션 판단.
+    실제 응답 키: total, last_page, next_page_link, previous_page_link
     """
-    # last 플래그
-    last = api_resp.get("last")
-    if last is True:  return False
-    if last is False: return True
+    # next_page_link 있으면 다음 페이지 존재
+    next_link = api_resp.get("next_page_link")
+    if next_link:
+        return True
 
-    # totalPages
-    total_pages = api_resp.get("totalPages") or api_resp.get("total_pages")
-    if total_pages is not None:
-        return current_page < int(total_pages)
+    # last_page 플래그
+    last_page = api_resp.get("last_page")
+    if last_page is not None:
+        return not bool(last_page)
 
-    # totalCount + perPage
-    total = api_resp.get("totalCount") or api_resp.get("total") or 0
-    per   = api_resp.get("perPage")    or api_resp.get("per_page") or PER_PAGE
+    # total 개수로 판단
+    total = api_resp.get("total") or 0
     if total:
-        return current_page * int(per) < int(total)
+        return current_page * PER_PAGE < int(total)
 
-    # 목록이 비어있으면 종료
-    items = _get_items(api_resp)
-    return len(items) >= PER_PAGE
+    # 아이템 수로 fallback
+    return len(_get_items(api_resp)) >= PER_PAGE
 
 
 def _get_items(api_resp: dict) -> list:

@@ -35,7 +35,7 @@ KEY_META          = "jobs:meta:{source}"
 KEY_LOCK          = "jobs:lock:{source}"
 
 HASH_TTL  = 60 * 60 * 24 * 30   # 30일 (초)
-LOCK_TTL  = 60 * 60 * 2          # 2시간 (수집 최대 소요 시간)
+LOCK_TTL  = 60 * 30               # 30분 (수집 최대 소요 시간)
 
 
 # ──────────────────────────────────────────────
@@ -272,5 +272,37 @@ class CollectLock:
 # ──────────────────────────────────────────────
 
 # 싱글턴 — pipeline.py에서 import해서 바로 사용
-filter   = RedisFilter()
-meta     = CollectMeta()
+dup_filter = RedisFilter()
+filter     = dup_filter   # 하위 호환 별칭
+meta       = CollectMeta()
+
+
+# ──────────────────────────────────────────────
+# 전체 캐시 초기화 유틸 (싱글턴 선언 이후에 위치)
+# ──────────────────────────────────────────────
+
+def clear_all_cache() -> dict:
+    """
+    Redis 해시 캐시 + 인메모리 캐시 전체 초기화.
+    대시보드 캐시 초기화 버튼 / CLI에서 호출.
+    반환: {"redis_keys": N, "mem": True/False}
+    """
+    result = {"redis_keys": 0, "mem": False}
+
+    client = _make_client()
+    if client:
+        try:
+            keys = [KEY_ALL_HASHES]
+            for src in ["sism", "okky", "freemoa", "kmong"]:
+                keys.append(KEY_SOURCE_HASHES.format(source=src))
+            result["redis_keys"] = client.delete(*keys)
+            logger.info(f"Redis 캐시 초기화 완료: {result['redis_keys']}개 키 삭제")
+        except Exception as e:
+            logger.warning(f"Redis 캐시 초기화 실패: {e}")
+
+    # 인메모리 캐시 초기화 (싱글턴이 이미 선언된 이후이므로 안전)
+    dup_filter._mem.clear()
+    result["mem"] = True
+    logger.info("인메모리 캐시 초기화 완료")
+
+    return result

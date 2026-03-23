@@ -80,11 +80,8 @@ def parse_project_duration(text: str) -> str:
     return m.group(0).strip() if m else ""
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger("freemoa_parser")
+from logger import get_logger
+logger = get_logger("freemoa_parser")
 
 
 # ──────────────────────────────────────────────
@@ -307,6 +304,7 @@ def fetch_detail_xhr(pno: str, session: requests.Session) -> dict:
             DETAIL_API_URL,
             params={"pno": pno},
             timeout=15,
+            verify=False,   # SSL 인증서 오류 우회
         )
         resp.raise_for_status()
         ct = resp.headers.get("Content-Type", "")
@@ -366,6 +364,12 @@ def build_job(meta: dict, detail: dict) -> FreemoaJob:
     if body:
         extra  = extract_skills(body)
         skills = list(dict.fromkeys(skills + extra))
+
+    # 공고 시작일 / 마감일 / 프로젝트 기간
+    _start, end_date = parse_date_range(body)
+    if not start_date:
+        start_date = _start
+    project_duration = parse_project_duration(body) or duration
 
     return FreemoaJob(
         pno        = pno,
@@ -455,6 +459,10 @@ def crawl_freemoa(
             print(job.title, job.url)
     """
     seen_hashes: set[str] = set()
+
+    # SSL 경고 메시지 억제 (verify=False 사용 시)
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     # requests 세션 (XHR 상세 호출용)
     session = requests.Session()

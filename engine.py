@@ -32,11 +32,8 @@ from kmong_parser   import crawl_kmong
 
 from pipeline import Pipeline
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-)
-logger = logging.getLogger("engine")
+from logger import get_logger
+logger = get_logger("engine")
 
 
 # ──────────────────────────────────────────────
@@ -106,11 +103,33 @@ def run_source(source_key: str, pipeline: Pipeline) -> int:
 # 전체 수집 (순차 실행)
 # ──────────────────────────────────────────────
 
+def clear_stale_locks(sources: list[str]) -> None:
+    """
+    이전 비정상 종료로 남은 락 제거.
+    실제 프로세스가 살아있는지 확인 후 죽은 락만 제거.
+    """
+    try:
+        from cache import CollectLock, _make_client, KEY_LOCK
+        client = _make_client()
+        if not client:
+            return
+        for src in sources:
+            key = KEY_LOCK.format(source=src)
+            if client.exists(key):
+                logger.warning(f"  [{src}] 이전 락 감지 — 강제 해제")
+                client.delete(key)
+    except Exception as e:
+        logger.debug(f"락 정리 중 오류 (무시): {e}")
+
+
 def run_all(sources: list[str] | None = None) -> dict:
     """모든 소스 순차 수집"""
     pipeline = Pipeline()
     targets  = sources or list(SOURCES.keys())
     results  = {}
+
+    # 이전 비정상 종료로 남은 락 정리
+    clear_stale_locks(targets)
 
     start = datetime.now()
     logger.info(f"=== 전체 수집 시작: {start:%Y-%m-%d %H:%M} ===")

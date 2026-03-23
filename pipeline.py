@@ -90,11 +90,20 @@ def normalize_skill(skill: str) -> str:
 
 
 def normalize_skills(skills: list[str]) -> list[str]:
+    """
+    스킬 정규화 + 대소문자 통일.
+    - SKILL_NORMALIZE 테이블로 표기 통일
+    - 중복 제거 (대소문자 무시)
+    - 빈 문자열 제거
+    """
     seen: dict[str, str] = {}
     for s in skills:
-        normalized = normalize_skill(s)
-        if normalized.upper() not in seen:
-            seen[normalized.upper()] = normalized
+        if not s or not s.strip():
+            continue
+        normalized = normalize_skill(s.strip())
+        key = normalized.upper()
+        if key not in seen:
+            seen[key] = normalized
     return list(seen.values())
 
 
@@ -197,8 +206,6 @@ class DBWriter:
             with open(self._fallback_path, "w", encoding="utf-8") as f:
                 json.dump(self._buffer, f, ensure_ascii=False, indent=2)
             logger.info(f"JSON fallback 저장: {self._fallback_path} ({len(self._buffer)}건)")
-        if self._session:
-            self._session.close()
 
 
 # ──────────────────────────────────────────────

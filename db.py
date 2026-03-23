@@ -195,7 +195,8 @@ def get_active_jobs(
         params["source"] = source
 
     if skill:
-        conditions.append(":skill = ANY(skills)")
+        # 대소문자 무시 스킬 필터
+        conditions.append("EXISTS (SELECT 1 FROM unnest(skills) s WHERE lower(s) = lower(:skill))")
         params["skill"] = skill
 
     where = " AND ".join(conditions)

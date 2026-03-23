@@ -78,3 +78,21 @@ streamlit run dashboard.py
 
 - Python 3.12 이상 (3.14 비권장)
 - Docker Desktop
+
+
+## 트러블 슈팅
+
+### Redis Lock 걸렸을 때 조치 방법
+```
+# Redis 접속
+docker exec -it it_collector_redis redis-cli -a redis1234
+
+# 락 키 확인
+keys jobs:lock:*
+
+# SISM 락 삭제
+del jobs:lock:sism
+
+# 전체 락 삭제
+del jobs:lock:sism jobs:lock:okky jobs:lock:freemoa jobs:lock:kmong
+```
