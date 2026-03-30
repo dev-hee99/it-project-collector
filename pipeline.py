@@ -4,13 +4,14 @@ Item Pipeline
 """
 
 import hashlib
+from logger import get_logger
 import logging
 import re
 from dataclasses import asdict
 from datetime import date, datetime
 from typing import Any
 
-logger = logging.getLogger("pipeline")
+logger = get_logger("pipeline")
 
 
 # ──────────────────────────────────────────────
@@ -125,7 +126,8 @@ def normalize_budget(budget: str) -> str:
 
 def to_common(job: Any) -> dict:
     """소스별 Job 객체 → 공통 스키마 dict 변환"""
-    raw = asdict(job)
+    # dataclass 면 asdict, 이미 dict 면 그대로
+    raw = asdict(job) if not isinstance(job, dict) else job
 
     # source 확인
     source = raw.get("source", "unknown")
@@ -196,6 +198,13 @@ class DBWriter:
         else:
             self._buffer.append(common)
 
+    def exists(self, url_hash: str) -> bool:
+        """DB에 해당 해시가 존재하는지 확인 (cache.py에서 DB 존재 여부 체크용)"""
+        if not self._use_db:
+            return False
+        from db import exists_job
+        return exists_job(url_hash)
+
     def _write_db(self, common: dict):
         from db import upsert_job
         upsert_job(common)
@@ -232,7 +241,8 @@ class Pipeline:
         """
         self._stats["total"] += 1
 
-        raw = asdict(job)
+        # dataclass 면 asdict, 이미 dict 면 그대로
+        raw = asdict(job) if not isinstance(job, dict) else job
 
         # 1. 중복 체크
         url_hash = raw.get("url_hash", "")
@@ -240,9 +250,14 @@ class Pipeline:
             url_hash = hashlib.sha256(raw.get("url", "").encode()).hexdigest()[:16]
 
         if self.dup_filter.is_duplicate(url_hash):
-            self._stats["duplicate"] += 1
-            logger.debug(f"  중복 건너뜀: {raw.get('title','')[:30]}")
-            return False
+            # [추가] Redis에는 있는데 DB에는 없는 경우 캐시 삭제 후 재수집
+            if not self.db_writer.exists(url_hash):
+                logger.info(f"  Redis 캐시 존재하나 DB에 없음 -> 캐시 삭제 후 수집 진행: {url_hash}")
+                self.dup_filter.remove_hash(url_hash, raw.get("source", ""))
+            else:
+                self._stats["duplicate"] += 1
+                logger.info(f"  중복 건너뜀: {raw.get('title','')[:30]}")
+                return False
 
         # 2. 공통 스키마 변환
         common = to_common(job)

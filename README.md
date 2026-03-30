@@ -41,7 +41,7 @@ docker compose up -d
 ### 3. 가상환경 및 패키지 설치
 
 ```bash
-py -3.12 -m venv .venv
+py -3.14 -m venv .venv
 .venv\Scripts\activate        # Windows
 source .venv/bin/activate     # Mac/Linux
 
@@ -76,7 +76,7 @@ streamlit run dashboard.py
 
 ## 요구사항
 
-- Python 3.12 이상 (3.14 비권장)
+- Python 3.14 이상
 - Docker Desktop
 
 

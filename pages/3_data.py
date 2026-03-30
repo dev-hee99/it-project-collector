@@ -24,11 +24,13 @@ st.set_page_config(
 
 SOURCE_LABELS = {
     "sism": "SISM", "okky": "OKKY Jobs",
-    "freemoa": "프리모아", "kmong": "크몽", "all": "전체",
+    "freemoa": "프리모아", "kmong": "크몽",
+    "elancer": "이랜서", "all": "전체",
 }
 SOURCE_COLORS = {
     "sism": "#378ADD", "okky": "#1D9E75",
     "freemoa": "#D85A30", "kmong": "#BA7517",
+    "elancer": "#0066CC",
 }
 
 # ── DB 연결 ───────────────────────────────────
@@ -123,12 +125,47 @@ if is_demo:
     st.info("💡 DB 미연결 — 더미 데이터 표시 중", icon="ℹ️")
 st.divider()
 
-# ── 필터 바 (4열) ─────────────────────────────
+# ── 기초 데이터 조회 (필터 UI 전에 스킬 목록 필요) ────────────
+skill_opts = get_demo_skills() if is_demo else db["get_top_skills"](50)
+
+# ── 상단 지표 & 인기 스킬 ─────────────────────────────────────
+if is_demo:
+    stats  = get_demo_stats()
+    skills = get_demo_skills()
+else:
+    stats  = db["get_stats"]()
+    skills = db["get_top_skills"](15)
+
+by_src    = {r["source"]: r for r in stats.get("by_source", [])}
+total_act = sum(r.get("active", 0) for r in by_src.values())
+
+cols = st.columns(6)
+for col, (label, val) in zip(cols, [
+    ("전체 모집중", total_act),
+    ("SISM",    by_src.get("sism",    {}).get("active", 0)),
+    ("OKKY",    by_src.get("okky",    {}).get("active", 0)),
+    ("프리모아", by_src.get("freemoa", {}).get("active", 0)),
+    ("크몽",    by_src.get("kmong",   {}).get("active", 0)),
+    ("이랜서",  by_src.get("elancer", {}).get("active", 0)),
+]):
+    with col:
+        st.metric(label, f"{val:,}건")
+
+with st.expander("📊 인기 기술 스택 TOP 10", expanded=False):
+    if skills:
+        df_sk = pd.DataFrame(skills[:10]).sort_values("job_count", ascending=True)
+        st.bar_chart(pd.DataFrame({"공고 수": df_sk["job_count"].values},
+                                   index=df_sk["skill"].values),
+                     horizontal=True, height=280)
+
+st.divider()
+
+# ── 검색 조건 ─────────────────────────────────
 f1, f2, f3, f4 = st.columns([2, 2, 3, 2])
 
 with f1:
     sel_source = st.selectbox(
-        "출처", ["all", "sism", "okky", "freemoa", "kmong"],
+        "출처", ["all", "sism", "okky", "freemoa", "kmong", "elancer"],
         format_func=lambda x: SOURCE_LABELS.get(x, x),
         key="data_source", label_visibility="collapsed",
     )
@@ -154,26 +191,19 @@ with f3:
     )
 
 with f4:
-    skill_opts = get_demo_skills() if is_demo else db["get_top_skills"](50)
     sel_skills = st.multiselect(
         "기술 스택", [s["skill"] for s in skill_opts],
         placeholder="기술 스택 선택",
         key="data_skills", label_visibility="collapsed",
     )
 
-st.divider()
-
-# ── 데이터 조회 ───────────────────────────────
+# ── 데이터 조회 & 필터 적용 ───────────────────
 if is_demo:
-    jobs   = get_demo_jobs(source=source_filter,
-                           skill=sel_skills[0] if sel_skills else None,
-                           keyword=keyword or None)
-    stats  = get_demo_stats()
-    skills = get_demo_skills()
+    jobs = get_demo_jobs(source=source_filter,
+                         skill=sel_skills[0] if sel_skills else None,
+                         keyword=keyword or None)
 else:
-    jobs   = db["get_active_jobs"](source=source_filter, limit=200)
-    stats  = db["get_stats"]()
-    skills = db["get_top_skills"](15)
+    jobs = db["get_active_jobs"](source=source_filter, limit=9999)
 
 # 키워드 필터 (대소문자 무시)
 if keyword:
@@ -203,31 +233,6 @@ elif sort_opt == "posted_at_desc":    jobs = sorted(jobs, key=lambda j: j.get("p
 elif sort_opt == "posted_at_asc":     jobs = sorted(jobs, key=lambda j: j.get("posted_at") or "")
 elif sort_opt == "deadline_asc":      jobs = sorted(jobs, key=_dl_key)
 
-by_src    = {r["source"]: r for r in stats.get("by_source", [])}
-total_act = sum(r.get("active", 0) for r in by_src.values())
-
-# ── 상단 지표 ─────────────────────────────────
-cols = st.columns(5)
-for col, (label, val) in zip(cols, [
-    ("전체 모집중", total_act),
-    ("SISM",    by_src.get("sism",    {}).get("active", 0)),
-    ("OKKY",    by_src.get("okky",    {}).get("active", 0)),
-    ("프리모아", by_src.get("freemoa", {}).get("active", 0)),
-    ("크몽",    by_src.get("kmong",   {}).get("active", 0)),
-]):
-    with col:
-        st.metric(label, f"{val:,}건")
-
-st.divider()
-
-# ── 인기 스킬 차트 ────────────────────────────
-with st.expander("📊 인기 기술 스택 TOP 10", expanded=False):
-    if skills:
-        df_sk = pd.DataFrame(skills[:10]).sort_values("job_count", ascending=True)
-        st.bar_chart(pd.DataFrame({"공고 수": df_sk["job_count"].values},
-                                   index=df_sk["skill"].values),
-                     horizontal=True, height=280)
-
 # ── 공고 목록 ─────────────────────────────────
 sort_lbl = {
     "collected_at_desc": "수집일 최신순",
@@ -242,20 +247,23 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# 무한 스크롤(Load More)을 위한 세션 상태 초기화
+if "items_to_show" not in st.session_state:
+    st.session_state.items_to_show = 15
+
+# 필터가 바뀌면 다시 처음부터 보여주기 위해 키 조합 생성
+current_filter_hash = f"{sel_source}_{sort_opt}_{keyword}_{sel_skills}"
+if "last_filter_hash" not in st.session_state or st.session_state.last_filter_hash != current_filter_hash:
+    st.session_state.items_to_show = 15
+    st.session_state.last_filter_hash = current_filter_hash
+
 if not jobs:
     st.info("조건에 맞는 공고가 없어요.")
 else:
-    PAGE_SIZE   = 10
-    total_pages = max(1, (len(jobs) - 1) // PAGE_SIZE + 1)
-    pg_col, _   = st.columns([2, 8])
-    with pg_col:
-        page = st.number_input(
-            "페이지", min_value=1, max_value=total_pages,
-            value=1, step=1, label_visibility="collapsed",
-        )
-    st.caption(f"{page} / {total_pages} 페이지")
+    # 지정된 개수만큼만 슬라이싱하여 표시
+    visible_jobs = jobs[:st.session_state.items_to_show]
 
-    for job in jobs[(page-1)*PAGE_SIZE: page*PAGE_SIZE]:
+    for job in visible_jobs:
         skills_  = job.get("skills") or []
         budget   = job.get("budget", "")
         deadline = job.get("deadline", "")
@@ -276,7 +284,7 @@ else:
             skills_ = [s.strip() for s in skills_.split(",") if s.strip()]
 
         skill_tags = "".join(
-            f'<span style="background:#f0f0f0;border-radius:4px;'
+            f'<span style="background:rgba(38, 39, 48, 0.2);border-radius:4px;'
             f'padding:1px 7px;font-size:11px;margin:2px 2px 0 0;'
             f'display:inline-block">{s}</span>'
             for s in skills_[:8]
@@ -302,3 +310,143 @@ else:
             f'</div></div></div>',
             unsafe_allow_html=True,
         )
+
+    # 자동 무한 스크롤 트리거 (버튼 숨김 + 모던 로더)
+    if len(jobs) > st.session_state.items_to_show:
+        # 1. 최신 트렌드에 맞는 심플한 로더 CSS
+        st.markdown(
+            """
+            <style>
+                /* 전체 로더 컨테이너 */
+                .modern-loader-container {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 40px 0;
+                    gap: 12px;
+                }
+                
+                /* 심플한 진행바 스타일 로더 */
+                .modern-progress-bar {
+                    width: 120px;
+                    height: 4px;
+                    background-color: rgba(29, 158, 117, 0.1);
+                    border-radius: 10px;
+                    position: relative;
+                    overflow: hidden;
+                }
+                
+                .modern-progress-bar::after {
+                    content: "";
+                    position: absolute;
+                    top: 0;
+                    left: -50%;
+                    width: 50%;
+                    height: 100%;
+                    background: linear-gradient(90deg, transparent, #1D9E75, transparent);
+                    animation: loading-slide 1.5s infinite ease-in-out;
+                    border-radius: 10px;
+                }
+                
+                @keyframes loading-slide {
+                    0% { left: -50%; }
+                    100% { left: 100%; }
+                }
+                
+                /* 은은한 텍스트 스타일 */
+                .loader-text {
+                    font-size: 13px;
+                    color: #999;
+                    letter-spacing: -0.01em;
+                    font-weight: 400;
+                }
+
+                /* 숨겨진 버튼 영역 */
+                .hidden-btn-area {
+                    height: 0;
+                    overflow: hidden;
+                    opacity: 0;
+                    pointer-events: none;
+                }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # 2. 모던 로더 표시
+        st.markdown(
+            """
+            <div class="modern-loader-container">
+                <div class="modern-progress-bar"></div>
+                <div class="loader-text">더 많은 프로젝트를 가져오고 있습니다</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # 3. 실제 동작을 위한 숨겨진 버튼 (영역 자체를 숨김)
+        if st.button("TRIGGER_LOAD_MORE", key="hidden_load_more_btn"):
+            st.session_state.items_to_show += 15
+            st.rerun()
+
+        # 4. JS IntersectionObserver 트리거 및 버튼 숨김 처리
+        st.components.v1.html(
+            """
+            <div id="scroll-trigger" style="height: 20px; width: 100%;"></div>
+            <script>
+                let isTriggering = false;
+                
+                // Streamlit 부모 문서에 접근
+                const parentDoc = window.parent.document;
+                
+                // 'TRIGGER_LOAD_MORE' 텍스트를 가진 버튼 찾기
+                const buttons = Array.from(parentDoc.querySelectorAll('button'));
+                const loadMoreBtn = buttons.find(btn => btn.textContent.includes('TRIGGER_LOAD_MORE'));
+                
+                // 화면에서 버튼 영역 자체를 완전히 숨김
+                if (loadMoreBtn) {
+                    const btnContainer = loadMoreBtn.closest('div[data-testid="stElementContainer"]');
+                    if (btnContainer) {
+                        btnContainer.style.display = 'none'; // 여백까지 깔끔하게 숨김
+                    } else {
+                        loadMoreBtn.style.display = 'none';
+                    }
+                }
+                
+                function triggerLoadMore() {
+                    if (isTriggering || !loadMoreBtn) return;
+                    
+                    try {
+                        isTriggering = true;
+                        console.log("Auto-loading more items...");
+                        loadMoreBtn.click(); // 숨겨진 버튼 클릭 이벤트 강제 발생
+                        
+                        // 리런(rerun) 대기 시간 동안 중복 방지
+                        setTimeout(() => { isTriggering = false; }, 5000);
+                    } catch (e) {
+                        console.error("Infinite scroll error:", e);
+                    }
+                }
+
+                const observer = new IntersectionObserver((entries) => {
+                    if (entries[0].isIntersecting && !isTriggering) {
+                        triggerLoadMore();
+                    }
+                }, { 
+                    root: null,
+                    rootMargin: '400px', // 사용자가 바닥에 도달하기 전 미리 로드
+                    threshold: 0.1 
+                });
+
+                const trigger = document.getElementById('scroll-trigger');
+                if (trigger) {
+                    observer.observe(trigger);
+                }
+            </script>
+            """,
+            height=20,
+        )
+    elif len(jobs) > 0:
+        st.divider()
+        st.info("✅ 모든 공고를 다 불러왔습니다.")

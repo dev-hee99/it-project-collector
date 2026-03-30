@@ -113,6 +113,21 @@ class RedisFilter:
         self._mem.add(url_hash)
         return False
 
+    def remove_hash(self, url_hash: str, source: str = ""):
+        """해당 해시를 캐시에서 제거"""
+        if self._use_redis:
+            try:
+                pipe = self._client.pipeline()
+                pipe.srem(KEY_ALL_HASHES, url_hash)
+                if source:
+                    pipe.srem(KEY_SOURCE_HASHES.format(source=source), url_hash)
+                pipe.execute()
+            except Exception as e:
+                logger.warning(f"Redis 해시 삭제 실패: {e}")
+        
+        if url_hash in self._mem:
+            self._mem.remove(url_hash)
+
     def bulk_load(self, source: str = "") -> int:
         """
         Redis에서 기존 해시를 인메모리로 프리로드.
@@ -129,6 +144,21 @@ class RedisFilter:
         except Exception as e:
             logger.warning(f"Redis 프리로드 실패: {e}")
             return 0
+
+    def clear_all(self):
+        """전체 해시 및 메타데이터 초기화"""
+        if not self._use_redis:
+            self._mem.clear()
+            return
+        try:
+            # jobs:* 로 시작하는 모든 키 삭제
+            keys = self._client.keys("jobs:*")
+            if keys:
+                self._client.delete(*keys)
+            self._mem.clear()
+            logger.info("  전체 캐시 초기화 완료")
+        except Exception as e:
+            logger.warning(f"전체 캐시 초기화 실패: {e}")
 
     def clear_source(self, source: str):
         """특정 소스 해시 초기화 (재수집 시 사용)"""

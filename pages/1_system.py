@@ -154,6 +154,16 @@ with col_redis:
         m1, m2 = st.columns(2)
         m1.metric("캐시 해시",   f"{red_info.get('hash_count', 0):,}개")
         m2.metric("메모리 사용", red_info.get("used_memory", "-"))
+        
+        if st.button("🗑️ Redis 캐시 전체 삭제", help="중복 체크용 해시를 모두 삭제하여 다시 수집할 수 있게 합니다."):
+            try:
+                from cache import RedisFilter
+                RedisFilter().clear_all()
+                st.success("Redis 캐시가 초기화되었습니다.")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as e:
+                st.error(f"캐시 삭제 중 오류 발생: {e}")
     else:
         st.warning("연결 실패 (선택 사항)")
         st.code(red_info.get("error", ""), language="text")
@@ -176,7 +186,7 @@ col_meta = get_collect_meta()
 
 if by_src:
     # 지표 카드
-    srcs = ["sism", "okky", "freemoa", "kmong"]
+    srcs = ["sism", "okky", "freemoa", "kmong", "elancer"]
     cols = st.columns(len(srcs))
     for col, src in zip(cols, srcs):
         data  = by_src.get(src, {})
@@ -235,7 +245,7 @@ ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 1, 1])
 with ctrl_col1:
     source_opt = st.selectbox(
         "수집 소스",
-        options=["전체", "sism", "okky", "freemoa", "kmong"],
+        options=["전체", "sism", "okky", "freemoa", "kmong", "elancer"],
         format_func=lambda x: SOURCE_LABELS.get(x, x),
         key="sys_source_select",
     )

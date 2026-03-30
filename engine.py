@@ -25,10 +25,28 @@ from datetime import datetime
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "parser"))
 
-from sism_parser    import crawl_sism
-from okky_parser    import crawl_okky
-from freemoa_parser import crawl_freemoa
-from kmong_parser   import crawl_kmong
+# Lazy imports for parsers to avoid dependency issues when running specific sources
+def get_crawl_sism():
+    from sism_parser import crawl_sism
+    return crawl_sism
+
+def get_crawl_okky():
+    from okky_parser import crawl_okky
+    return crawl_okky
+
+def get_crawl_freemoa():
+    from freemoa_parser import crawl_freemoa
+    return crawl_freemoa
+
+def get_crawl_kmong():
+    from kmong_parser import crawl_kmong
+    return crawl_kmong
+
+# 이랜서는 parser/ 디렉토리에 위치하지만 루트 logger 등을 임포트하므로 
+# engine.py와 같은 레벨에서 임포트 가능하게 설정됨
+def get_parse_elancer():
+    from elancer_parser import parse
+    return parse
 
 from pipeline import Pipeline
 
@@ -42,24 +60,29 @@ logger = get_logger("engine")
 
 SOURCES = {
     "sism": {
-        "crawler":   lambda: crawl_sism(max_pages=50),
+        "crawler":   lambda: get_crawl_sism()(max_pages=50),
         "label":     "SISM",
         "max_pages": 50,
     },
     "okky": {
-        "crawler":   lambda: crawl_okky(max_pages=50),
+        "crawler":   lambda: get_crawl_okky()(max_pages=50),
         "label":     "OKKY Jobs",
         "max_pages": 50,
     },
     "freemoa": {
-        "crawler":   lambda: crawl_freemoa(max_pages=50),
+        "crawler":   lambda: get_crawl_freemoa()(max_pages=50),
         "label":     "프리모아",
         "max_pages": 50,
     },
     "kmong": {
-        "crawler":   lambda: crawl_kmong(max_pages=50),
+        "crawler":   lambda: get_crawl_kmong()(max_pages=50),
         "label":     "크몽",
         "max_pages": 50,
+    },
+    "elancer": {
+        "crawler":   lambda: get_parse_elancer()(),
+        "label":     "이랜서",
+        "max_pages": 0,   # API 기반, 페이지 개념 없음
     },
 }
 

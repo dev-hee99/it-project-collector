@@ -99,6 +99,22 @@ def infer_is_active(common: dict) -> bool:
     )
 
 
+def exists_job(url_hash: str) -> bool:
+    """DB에 해당 url_hash가 존재하는지 확인"""
+    if not url_hash:
+        return False
+    try:
+        with get_session() as session:
+            res = session.execute(
+                text("SELECT 1 FROM jobs WHERE url_hash = :h LIMIT 1"),
+                {"h": url_hash}
+            ).fetchone()
+            return res is not None
+    except Exception as e:
+        logger.error(f"DB 존재 확인 실패 ({url_hash}): {e}")
+        return False
+
+
 # ──────────────────────────────────────────────
 # upsert
 # ──────────────────────────────────────────────
